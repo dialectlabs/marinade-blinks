@@ -1,15 +1,20 @@
-import { ActionGetResponse, BLOCKCHAIN_IDS } from "@solana/actions";
+import {
+  ActionGetResponse,
+  ActionPostRequest,
+  ActionPostResponse,
+} from "@solana/actions";
+import { Connection, PublicKey } from "@solana/web3.js";
 
-// Set standardized headers for Blink Providers
-const headers = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, x-blockchain-ids, x-action-version",
-  "Content-Type": "application/json",
-  "x-blockchain-ids": `${[BLOCKCHAIN_IDS.mainnet]}`,
-  "x-action-version": "2.4",
-};
+import BN from "bn.js";
+
+import { getLamports, headers } from "../../utils";
+import { Marinade } from "../../marinade";
+
+const RPC_URL: string =
+  process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
+
+const connection = new Connection(RPC_URL);
+const marinade = new Marinade(connection);
 
 // OPTIONS endpoint is required for CORS preflight requests
 // Your Blink won't render if you don't add this
@@ -69,4 +74,54 @@ export const GET = async (req: Request) => {
     status: 200,
     headers,
   });
+};
+
+// POST endpoint handles the actual transaction creation
+export const POST = async (req: Request) => {
+  const request: ActionPostRequest = await req.json();
+
+  let pubkey: PublicKey;
+  try {
+    pubkey = new PublicKey(request.account);
+  } catch (e) {
+    // If not a valid pubkey, throw error. TODO: Return error type for blinks.
+    return new Response(
+      JSON.stringify({
+        error: `Invalid wallet address: ${request.account}. Please provide a valid wallet public key as the account in your POST request.`,
+      }),
+      {
+        status: 500, // TODO: Determine correct error type.
+        headers,
+      },
+    );
+  }
+  // Step 1: Extract parameters, prepare data
+  const url = new URL(req.url);
+  const percent = Number(url.searchParams.get("percent"));
+  const amount = Number(url.searchParams.get("amount"));
+
+  const balance = await connection.getBalance(pubkey);
+
+  let lamports: BN;
+  try {
+    lamports = await getLamports(connection, amount, percent, balance);
+  } catch (e: any) {
+    return new Response(
+      JSON.stringify({
+        error: e.message,
+      }),
+      {
+        status: 500, // TODO: Determine correct error type.
+        headers,
+      },
+    );
+  }
+
+  const tx = await marinade.stake(pubkey, lamports);
+  const response: ActionPostResponse = {
+    type: "transaction",
+    transaction: Buffer.from(tx.serialize()).toString("base64"),
+  };
+
+  return Response.json(response, { status: 200, headers });
 };
